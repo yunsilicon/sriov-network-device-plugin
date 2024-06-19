@@ -66,6 +66,33 @@ func GetPfAddr(pciAddr string) (string, error) {
 	return filepath.Base(pciinfo), nil
 }
 
+func readDirNames(dirname string) ([]string, error) {
+	f, err := os.Open(dirname)
+	if err != nil {
+		return nil, err
+	}
+	names, err := f.Readdirnames(-1)
+	f.Close()
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+func getVirtioName(pciAddress string) string {
+	pciDir := filepath.Join(sysBusPci, pciAddress)
+	names, err := readDirNames(pciDir)
+	if err != nil {
+		return ""
+	}
+	for _, name := range names {
+		if strings.Contains(name, "virtio") {
+			return name
+		}
+	}
+	return ""
+}
+
 // GetPfName returns SRIOV PF name for the given VF
 // If device is not VF then it will return empty string
 func GetPfName(pciAddr string) (string, error) {
@@ -77,21 +104,31 @@ func GetPfName(pciAddr string) (string, error) {
 	if pfEswitchMode == "" {
 		// If device doesn't support eswitch mode query or doesn't have sriov enabled,
 		// fall back to the default implementation
-		if err == nil || strings.Contains(strings.ToLower(err.Error()), "error getting devlink device attributes for net device") {
-			glog.Infof("Devlink query for eswitch mode is not supported for device %s. %v", pciAddr, err)
-		} else {
-			return "", err
+		//	if err == nil || strings.Contains(strings.ToLower(err.Error()), "error getting devlink device attributes for net device") {
+		//		glog.Infof("Devlink query for eswitch mode is not supported for device %s. %v", pciAddr, err)
+		//	} else {
+		//		return "", err
+		//	}
+		if err != nil {
+			glog.Infof("[xsc] pf eswitch mode is %s, but %v", pfEswitchMode, err)
 		}
 	} else if pfEswitchMode == eswitchModeSwitchdev {
 		name, err := GetSriovnetProvider().GetUplinkRepresentor(pciAddr)
 		if err != nil {
-			return "", err
+			glog.Infof("[xsc] pf eswitch mode is %s, but %v", pfEswitchMode, err)
+		} else {
+			return name, nil
 		}
-
-		return name, nil
 	}
 
-	path := filepath.Join(sysBusPci, pciAddr, "physfn", "net")
+	var path = ""
+	virtioName := getVirtioName(pciAddr)
+	if virtioName == "" {
+		path = filepath.Join(sysBusPci, pciAddr, "physfn", "net")
+	} else {
+		path = filepath.Join(sysBusPci, pciAddr, "physfn", "virtio0", "net")
+	}
+
 	files, err := os.ReadDir(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -354,7 +391,14 @@ func GetUIODeviceFile(dev string) (devFile string, err error) {
 
 // GetNetNames returns host net interface names as string for a PCI device from its pci address
 func GetNetNames(pciAddr string) ([]string, error) {
-	netDir := filepath.Join(sysBusPci, pciAddr, "net")
+	var netDir = ""
+	virtioName := getVirtioName(pciAddr)
+	if virtioName == "" {
+		netDir = filepath.Join(sysBusPci, pciAddr, "net")
+	} else {
+		netDir = filepath.Join(sysBusPci, fmt.Sprintf("%s/%s", pciAddr, virtioName), "net")
+	}
+
 	if _, err := os.Lstat(netDir); err != nil {
 		return nil, fmt.Errorf("GetNetName(): no net directory under pci device %s: %q", pciAddr, err)
 	}
